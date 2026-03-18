@@ -1,6 +1,6 @@
 # AI Research Environment Deployment Skill
 
-AI科研项目环境部署助手，让研究生和科研人员专注于研究本身，而非环境配置。
+AI科研项目环境部署助手，让科研人员专注于研究本身，而非环境配置。
 
 ## 为什么需要这个Skill？
 
