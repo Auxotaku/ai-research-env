@@ -1,10 +1,14 @@
 # AI Research Environment Deployment Skill
 
-AI科研项目环境部署助手，专为Linux服务器设计。
+AI科研项目环境部署助手，让研究生和科研人员专注于研究本身，而非环境配置。
 
-## 功能概述
+## 为什么需要这个Skill？
 
-解决AI/深度学习项目环境配置的常见痛点：
+**科研时间宝贵，不该浪费在配环境上。**
+
+克隆一个新仓库 → README过时 → 依赖冲突 → CUDA版本不匹配 → 模型下载失败 → 折腾半天还没开始跑实验
+
+这个Skill帮你自动化解决这些问题，让你快速进入研究状态。
 
 | 功能 | 说明 |
 |------|------|
@@ -17,12 +21,24 @@ AI科研项目环境部署助手，专为Linux服务器设计。
 
 ## 支持的项目类型
 
-- PyTorch 模型训练/推理
-- 大语言模型部署 (LLM)
-- 视频生成模型 (Diffusers, SVD等)
+**大语言模型**
+- LLaMA系列、Qwen、ChatGLM、Mistral、DeepSeek等
+- vLLM、text-generation-inference等推理框架
+
+**视频生成模型**
+- Wan系列 (Wan2.1等)
+- LTX Video
+- CogVideo、Open-Sora等
+
+**图像生成模型**
+- Stable Diffusion系列
+- FLUX、SDXL等
+
+**传统视觉任务**
 - OpenMMLab系列 (MMDetection, MMAction2, MMSegmentation等)
 - YOLO系列
-- 其他PyTorch生态项目
+
+**其他PyTorch生态项目**
 
 ## 安装
 
@@ -129,7 +145,6 @@ ModelScope → HuggingFace → hf-mirror镜像 → 提示设置代理
 
 ### 不适用场景
 
-- Windows环境（脚本针对Linux服务器设计）
 - 非Python项目
 - 需要root权限的系统级安装
 
