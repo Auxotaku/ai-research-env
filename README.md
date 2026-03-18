@@ -16,10 +16,10 @@ AI科研项目环境部署助手，加速你的每次探索，让科研专注于
 |------|------|
 | 环境诊断 | 检测Python、CUDA、GPU、PyTorch状态 |
 | 依赖分析 | 扫描代码import，检测缺失依赖 |
-| 智能安装 | PyTorch优先，自动排序，断点续传 |
+| 智能安装 | PyTorch优先，自动排序，断点续传，命令记录 |
 | 镜像配置 | 一键配置pip/conda/HuggingFace国内镜像 |
-| 模型下载 | ModelScope优先，自动选择最优下载源 |
-| GPU检查 | CUDA兼容性检测，输出正确安装命令 |
+| 模型下载 | ModelScope智能搜索，自动选择最优下载源 |
+| 环境报告 | 生成详细的环境配置报告，记录所有操作 |
 
 ## 支持的项目类型
 
@@ -65,7 +65,7 @@ git clone https://github.com/Auxotaku/ai-research-env.git
 ### 核心工作流程
 
 ```
-1. 诊断环境 → 2. 分析项目 → 3. 配置镜像 → 4. 智能安装 → 5. 下载模型
+1. 诊断环境 → 2. 分析项目 → 3. 配置镜像 → 4. 智能安装 → 5. 下载模型 → 6. 生成报告
 ```
 
 ### 脚本命令
@@ -81,16 +81,16 @@ python scripts/scan_deps.py /path/to/project  # 静态扫描缺失依赖
 # 3. 配置镜像源
 python scripts/setup_mirrors.py all --mirror tsinghua
 
-# 4. 智能安装
+# 4. 智能安装（完成后自动生成报告）
 python scripts/smart_install.py /path/to/project --dry-run  # 预览
 python scripts/smart_install.py /path/to/project            # 执行
 
-# 5. GPU/CUDA检查
-python scripts/check_gpu.py
-
-# 6. 下载模型
+# 5. 下载模型（ModelScope智能搜索）
 python scripts/download_model.py meta-llama/Llama-2-7b-hf
-python scripts/download_model.py --modelscope Qwen/Qwen-7B-Chat
+python scripts/download_model.py --modelscope-id Qwen/Qwen2-7B-Instruct
+
+# 6. 生成环境配置报告
+python scripts/generate_report.py /path/to/project
 ```
 
 ## 安装顺序策略
@@ -107,10 +107,29 @@ python scripts/download_model.py --modelscope Qwen/Qwen-7B-Chat
 ## 模型下载策略
 
 ```
-ModelScope → HuggingFace → hf-mirror镜像 → 提示设置代理
+1. 在ModelScope搜索模型名称
+2. 显示搜索结果，让用户选择
+3. 选择后从ModelScope下载
+4. 失败则从HuggingFace下载（使用hf-mirror镜像）
+5. 记录下载命令和位置
 ```
 
-优先从ModelScope下载，失败后自动切换源。
+## 生成的文件
+
+| 文件 | 说明 |
+|------|------|
+| `.install_state.json` | 安装状态记录（断点续传） |
+| `.install_commands.log` | 安装命令历史（精简版） |
+| `.download_history.json` | 模型下载历史 |
+| `environment_setup_report.md` | 最终环境配置报告 |
+
+## 环境配置报告内容
+
+1. **环境概览** - Python/CUDA版本、虚拟环境、项目类型
+2. **安装结果** - 成功/失败的包列表
+3. **下载的模型** - 模型ID、来源、本地路径、下载命令
+4. **使用指南** - 来自README的运行示例
+5. **历史命令** - 精简的安装命令记录
 
 ## 安全说明
 
@@ -168,7 +187,8 @@ ai-research-env/
 │   ├── smart_install.py        # 智能安装
 │   ├── setup_mirrors.py        # 镜像配置
 │   ├── check_gpu.py            # GPU/CUDA检查
-│   └── download_model.py       # 模型下载
+│   ├── download_model.py       # 模型下载
+│   └── generate_report.py      # 环境配置报告生成
 └── references/                 # 参考文档
     ├── linux-server.md         # Linux服务器配置
     ├── mirror-sources.md       # 镜像源配置
@@ -209,6 +229,16 @@ A: 脚本会自动使用镜像源。如果仍然慢，可以：
 ### Q: 如何清除安装状态重新安装？
 
 A: 手动删除项目目录下的 `.install_state.json` 文件。
+
+### Q: 环境配置报告有什么用？
+
+A: 报告汇总了所有安装操作，包括：
+- 安装了哪些包
+- 模型下载到哪里
+- 如何运行项目（来自README）
+- 所有执行的命令（精简版）
+
+方便你记录、复盘或分享给他人。
 
 ## 贡献
 

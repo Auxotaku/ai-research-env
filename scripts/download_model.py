@@ -5,7 +5,7 @@
 适用于Linux服务器科研环境
 
 特性：
-1. ModelScope优先检查
+1. ModelScope智能搜索（根据模型名搜索，而非精确匹配ID）
 2. 大文件下载告知用户
 3. 提供下载位置建议
 4. 安全约束：不执行删除操作
@@ -14,9 +14,14 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+
+
+DOWNLOAD_LOG_FILE = ".download_history.json"
 
 
 def get_hf_endpoint():
@@ -27,7 +32,7 @@ def get_hf_endpoint():
 def set_hf_mirror(url="https://hf-mirror.com"):
     """设置HuggingFace镜像"""
     os.environ["HF_ENDPOINT"] = url
-    print(f"已设置HF_ENDPOINT={url}")
+    return f"export HF_ENDPOINT={url}"
 
 
 def get_default_cache_dir():
@@ -35,14 +40,12 @@ def get_default_cache_dir():
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
         return Path(hf_home)
-
     return Path.home() / ".cache" / "huggingface"
 
 
 def suggest_download_location(model_id, project_path=None):
     """建议下载位置"""
     cache_dir = get_default_cache_dir()
-
     suggestions = []
 
     suggestions.append(
@@ -74,59 +77,56 @@ def suggest_download_location(model_id, project_path=None):
     return suggestions
 
 
-def check_modelscope_availability(model_id):
-    """检查ModelScope是否有该模型"""
+def search_modelscope_models(keyword, limit=5):
+    """在ModelScope搜索模型"""
     try:
-        result = subprocess.run(
-            [
-                "python",
-                "-c",
-                f'''
-from modelscope.hub.api import HubApi
-api = HubApi()
+        code = f'''
+import sys
 try:
-    model_info = api.get_model(model_id="{model_id}")
-    print("AVAILABLE")
-except:
-    pass
-''',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
+    from modelscope.msdatasets import MsDataset
+    from modelscope.hub.api import HubApi
+    
+    api = HubApi()
+    result = api.list_models(filter="{keyword}", limit={limit})
+    
+    for model in result:
+        print(f"MODEL:{{model.id}}|{{model.name}}")
+except ImportError:
+    print("MODELSCOPE_NOT_INSTALLED")
+except Exception as e:
+    print(f"ERROR:{{e}}")
+'''
+        result = subprocess.run(
+            ["python", "-c", code], capture_output=True, text=True, timeout=60
         )
-        return "AVAILABLE" in result.stdout
-    except:
-        return False
+
+        if "MODELSCOPE_NOT_INSTALLED" in result.stdout:
+            return None, "ModelScope未安装，运行: pip install modelscope"
+
+        models = []
+        for line in result.stdout.strip().split("\n"):
+            if line.startswith("MODEL:"):
+                parts = line[6:].split("|")
+                if len(parts) >= 2:
+                    models.append({"id": parts[0], "name": parts[1]})
+
+        return models, None
+    except subprocess.TimeoutExpired:
+        return None, "搜索超时"
+    except Exception as e:
+        return None, str(e)
 
 
-def get_model_size_estimate(model_id, source="huggingface"):
-    """估算模型大小"""
-    size_info = {
-        "7b": "~14GB (FP16) / ~4GB (4-bit)",
-        "13b": "~26GB (FP16) / ~8GB (4-bit)",
-        "30b": "~60GB (FP16) / ~16GB (4-bit)",
-        "70b": "~140GB (FP16) / ~40GB (4-bit)",
-        "1.3b": "~2.6GB (FP16)",
-        "3b": "~6GB (FP16)",
-    }
-
-    model_lower = model_id.lower()
-    for key, size in size_info.items():
-        if key in model_lower:
-            return size
-
-    return "未知 (请查看模型页面)"
-
-
-def download_from_modelscope(model_id, local_dir=None, revision=None):
+def download_from_modelscope(
+    model_id, local_dir=None, revision=None, log_commands=None
+):
     """从ModelScope下载模型"""
     try:
         from modelscope import snapshot_download
     except ImportError:
         print("错误: 未安装modelscope")
         print("安装: pip install modelscope")
-        return False
+        return False, None
 
     print(f"\n[ModelScope下载]")
     print(f"  模型ID: {model_id}")
@@ -135,7 +135,10 @@ def download_from_modelscope(model_id, local_dir=None, revision=None):
         local_dir = get_default_cache_dir() / "modelscope" / model_id.replace("/", "--")
 
     print(f"  目标位置: {local_dir}")
-    print(f"  估算大小: {get_model_size_estimate(model_id)}")
+
+    commands = []
+    cmd = f"from modelscope import snapshot_download; snapshot_download('{model_id}')"
+    commands.append(f'python -c "{cmd}"')
 
     try:
         print("\n开始下载...")
@@ -143,14 +146,23 @@ def download_from_modelscope(model_id, local_dir=None, revision=None):
             model_id, cache_dir=str(local_dir.parent), revision=revision
         )
         print(f"\n下载完成! 文件保存在: {path}")
-        return True
+
+        if log_commands is not None:
+            log_commands.extend(commands)
+
+        return True, str(path)
     except Exception as e:
         print(f"\n下载失败: {e}")
-        return False
+        return False, None
 
 
 def download_from_huggingface(
-    repo_id, repo_type="model", local_dir=None, token=None, use_mirror=True
+    repo_id,
+    repo_type="model",
+    local_dir=None,
+    token=None,
+    use_mirror=True,
+    log_commands=None,
 ):
     """从HuggingFace下载模型"""
     try:
@@ -158,14 +170,17 @@ def download_from_huggingface(
     except ImportError:
         print("错误: 未安装huggingface_hub")
         print("安装: pip install huggingface_hub")
-        return False
+        return False, None
+
+    commands = []
+
+    if use_mirror:
+        mirror_cmd = set_hf_mirror()
+        commands.append(mirror_cmd)
 
     if token:
         login(token=token)
         print("已使用token登录")
-
-    if use_mirror:
-        set_hf_mirror()
 
     endpoint = get_hf_endpoint()
     print(f"\n[HuggingFace下载]")
@@ -179,7 +194,9 @@ def download_from_huggingface(
         )
 
     print(f"  目标位置: {local_dir}")
-    print(f"  估算大小: {get_model_size_estimate(repo_id)}")
+
+    cmd = f"from huggingface_hub import snapshot_download; snapshot_download('{repo_id}', endpoint='{endpoint}')"
+    commands.append(f'python -c "{cmd}"')
 
     try:
         print("\n开始下载...")
@@ -191,83 +208,96 @@ def download_from_huggingface(
             resume_download=True,
         )
         print(f"\n下载完成! 文件保存在: {local_dir}")
-        return True
+
+        if log_commands is not None:
+            log_commands.extend(commands)
+
+        return True, str(local_dir)
     except Exception as e:
         print(f"\n下载失败: {e}")
-        return False
-
-
-def download_with_git(repo_url, local_dir=None):
-    """使用git clone下载"""
-    if "huggingface.co" in repo_url:
-        endpoint = get_hf_endpoint()
-        if "hf-mirror.com" in endpoint:
-            repo_url = repo_url.replace("huggingface.co", "hf-mirror.com")
-            print(f"已替换为镜像地址: {repo_url}")
-
-    if not local_dir:
-        local_dir = repo_url.split("/")[-1].replace(".git", "")
-
-    print(f"\n[Git克隆]")
-    print(f"  URL: {repo_url}")
-    print(f"  目标位置: {local_dir}")
-
-    try:
-        result = subprocess.run(
-            ["git", "clone", repo_url, str(local_dir)], capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            print(f"克隆完成! 文件保存在: {local_dir}")
-            return True
-        else:
-            print(f"克隆失败: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"Git命令失败: {e}")
-        return False
+        return False, None
 
 
 def smart_download(
     model_id, local_dir=None, project_path=None, prefer_modelscope=True, token=None
 ):
-    """智能下载：优先ModelScope，失败则HuggingFace"""
+    """智能下载：优先在ModelScope搜索，让用户选择"""
     print("=" * 60)
     print("模型下载助手")
     print("=" * 60)
 
-    suggestions = suggest_download_location(model_id, project_path)
-
-    print("\n[建议下载位置]")
-    for i, sug in enumerate(suggestions, 1):
-        marker = " (默认)" if sug["is_default"] else ""
-        print(f"  {i}. {sug['path']}{marker}")
-        print(f"     {sug['description']}")
-
-    if local_dir is None:
-        local_dir = suggestions[0]["path"]
-
-    print(f"\n[选择的下载位置]")
-    print(f"  {local_dir}")
-
-    print(f"\n[模型大小估算]")
-    print(f"  {get_model_size_estimate(model_id)}")
+    commands_log = []
+    download_result = {
+        "model_id": model_id,
+        "source": None,
+        "local_path": None,
+        "timestamp": datetime.now().isoformat(),
+        "commands": [],
+    }
 
     if prefer_modelscope:
-        print(f"\n[检查ModelScope可用性]")
-        print(f"  正在检查...")
+        model_name = model_id.split("/")[-1]
+        print(f"\n[步骤1] 在ModelScope搜索模型")
+        print(f"  搜索关键词: {model_name}")
+        print(f"  正在搜索...")
 
-        if check_modelscope_availability(model_id):
-            print(f"  ModelScope: 可用")
-            print(f"\n优先从ModelScope下载...")
-            if download_from_modelscope(model_id, local_dir):
-                return True
-            print("ModelScope下载失败，尝试HuggingFace...")
+        models, error = search_modelscope_models(model_name)
+
+        if models:
+            print(f"\n  找到 {len(models)} 个相关模型:")
+            for i, m in enumerate(models, 1):
+                print(f"    {i}. {m['id']}")
+                print(f"       名称: {m['name']}")
+
+            print(f"\n  是否从ModelScope下载? (输入序号选择，或按Enter跳过)")
+            try:
+                choice = input(
+                    "  选择 [1-{}] 或 Enter 跳过: ".format(len(models))
+                ).strip()
+                if choice:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(models):
+                        selected_model = models[idx]["id"]
+                        print(f"\n  已选择: {selected_model}")
+
+                        if local_dir is None:
+                            local_dir = (
+                                get_default_cache_dir()
+                                / "modelscope"
+                                / selected_model.replace("/", "--")
+                            )
+
+                        success, path = download_from_modelscope(
+                            selected_model, local_dir, log_commands=commands_log
+                        )
+
+                        if success:
+                            download_result["source"] = "ModelScope"
+                            download_result["local_path"] = path
+                            download_result["model_id"] = selected_model
+                            download_result["commands"] = commands_log
+                            save_download_history(download_result, project_path)
+                            return True, download_result
+
+                        print("  ModelScope下载失败，尝试HuggingFace...")
+            except (ValueError, KeyboardInterrupt):
+                print("  跳过ModelScope下载")
+        elif error:
+            print(f"  搜索失败: {error}")
         else:
-            print(f"  ModelScope: 未找到")
+            print(f"  未找到相关模型")
 
-    print(f"\n[从HuggingFace下载]")
-    if download_from_huggingface(model_id, local_dir=local_dir, token=token):
-        return True
+    print(f"\n[步骤2] 从HuggingFace下载")
+    success, path = download_from_huggingface(
+        model_id, local_dir=local_dir, token=token, log_commands=commands_log
+    )
+
+    if success:
+        download_result["source"] = "HuggingFace"
+        download_result["local_path"] = path
+        download_result["commands"] = commands_log
+        save_download_history(download_result, project_path)
+        return True, download_result
 
     print("\n" + "=" * 60)
     print("下载失败!")
@@ -277,15 +307,32 @@ def smart_download(
     print("  3. 检查网络连接")
     print("=" * 60)
 
-    return False
+    return False, download_result
+
+
+def save_download_history(result, project_path=None):
+    """保存下载历史"""
+    if project_path:
+        history_file = Path(project_path) / DOWNLOAD_LOG_FILE
+    else:
+        history_file = Path.cwd() / DOWNLOAD_LOG_FILE
+
+    history = []
+    if history_file.exists():
+        try:
+            history = json.loads(history_file.read_text())
+        except:
+            pass
+
+    history.append(result)
+    history_file.write_text(json.dumps(history, indent=2, ensure_ascii=False))
+    print(f"\n下载历史已保存: {history_file}")
 
 
 def list_cached_models():
     """列出已缓存模型"""
     cache_dir = get_default_cache_dir()
-
-    print(f"缓存目录: {cache_dir}")
-    print()
+    print(f"缓存目录: {cache_dir}\n")
 
     hub_dir = cache_dir / "hub"
     if not hub_dir.exists():
@@ -298,15 +345,13 @@ def list_cached_models():
     for item in hub_dir.iterdir():
         if item.is_dir() and item.name.startswith("models--"):
             model_name = item.name.replace("models--", "").replace("--", "/")
-
             size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
             size_gb = size / (1024**3)
             total_size += size
 
             print(f"  {model_name}")
             print(f"    大小: {size_gb:.2f} GB")
-            print(f"    路径: {item}")
-            print()
+            print(f"    路径: {item}\n")
 
     print(f"总缓存大小: {total_size / (1024**3):.2f} GB")
 
@@ -326,15 +371,11 @@ def main():
     )
     parser.add_argument("--token", help="HuggingFace token")
     parser.add_argument(
-        "--mirror", "-m", action="store_true", help="使用hf-mirror.com镜像"
+        "--no-modelscope", action="store_true", help="跳过ModelScope搜索"
     )
-    parser.add_argument(
-        "--no-modelscope", action="store_true", help="不优先从ModelScope下载"
-    )
-    parser.add_argument("--project", "-p", help="项目路径(用于建议下载位置)")
-    parser.add_argument("--git", action="store_true", help="使用git clone下载")
+    parser.add_argument("--project", "-p", help="项目路径")
     parser.add_argument("--list-cache", action="store_true", help="列出已缓存模型")
-    parser.add_argument("--modelscope", help="直接从ModelScope下载 (指定model_id)")
+    parser.add_argument("--modelscope-id", help="直接指定ModelScope模型ID")
 
     args = parser.parse_args()
 
@@ -342,39 +383,32 @@ def main():
         list_cached_models()
         return
 
-    if args.modelscope:
-        download_from_modelscope(args.modelscope, args.output)
+    if args.modelscope_id:
+        success, result = download_from_modelscope(args.modelscope_id, args.output)
+        if success:
+            print(f"\n模型已下载到: {result}")
         return
 
     if not args.model_id:
         parser.print_help()
         print("\n示例:")
-        print("  # 智能下载 (优先ModelScope)")
+        print("  # 智能下载 (自动搜索ModelScope)")
         print("  python download_model.py meta-llama/Llama-2-7b-hf")
         print()
-        print("  # 从ModelScope下载")
-        print("  python download_model.py --modelscope Qwen/Qwen-7B-Chat")
+        print("  # 指定ModelScope模型ID")
+        print("  python download_model.py --modelscope-id Qwen/Qwen2-7B-Instruct")
         print()
-        print("  # 使用HuggingFace镜像")
-        print("  python download_model.py meta-llama/Llama-2-7b-hf --mirror")
-        print()
-        print("  # 指定下载位置")
-        print(
-            "  python download_model.py meta-llama/Llama-2-7b-hf -o /data/models/llama2-7b"
-        )
+        print("  # 跳过ModelScope，直接从HuggingFace下载")
+        print("  python download_model.py meta-llama/Llama-2-7b-hf --no-modelscope")
         return
 
-    if args.git:
-        repo_url = f"https://huggingface.co/{args.model_id}"
-        download_with_git(repo_url, args.output)
-    else:
-        smart_download(
-            args.model_id,
-            local_dir=args.output,
-            project_path=args.project,
-            prefer_modelscope=not args.no_modelscope,
-            token=args.token,
-        )
+    success, result = smart_download(
+        args.model_id,
+        local_dir=args.output,
+        project_path=args.project,
+        prefer_modelscope=not args.no_modelscope,
+        token=args.token,
+    )
 
 
 if __name__ == "__main__":
